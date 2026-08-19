@@ -36,9 +36,12 @@ def decode_segmap(label_mask, dataset, plot=False):
         n_classes = 3
         label_colours = get_braintumor_labels()
 
+    elif dataset == 'plant_phenotyping':
+        n_classes = 20
+        label_colours = get_plant_labels()
 
     else:
-        raise NotImplementedError
+        raise NotImplementedError(f"Dataset '{dataset}' not supported for visualization")
 
     r = label_mask.copy()
     g = label_mask.copy()
@@ -138,6 +141,15 @@ def get_braintumor_labels():
         [128, 64, 128],
         [244, 35, 232],
         [70, 70, 70]])
+
+
+def get_plant_labels():
+    """Color map for Plant Phenotyping dataset (20 classes: 0=background, 1-19=organs).
+    Uses deterministic pseudo-random colors for reproducibility."""
+    rng = np.random.RandomState(42)
+    colors = rng.randint(0, 255, (20, 3))
+    colors[0] = [0, 0, 0]  # background = black
+    return colors.astype(np.uint8)
 
 
 

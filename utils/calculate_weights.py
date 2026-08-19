@@ -1,7 +1,7 @@
 import os
+from pathlib import Path
 from tqdm import tqdm
 import numpy as np
-#from data_generators.datasets_path import Path
 
 def calculate_weigths_labels(config, dataset, dataloader, num_classes):
     # Create an instance from the data loader
@@ -23,7 +23,11 @@ def calculate_weigths_labels(config, dataset, dataloader, num_classes):
         class_weight = 1 / (np.log(1.02 + (frequency / total_frequency)))
         class_weights.append(class_weight)
     ret = np.array(class_weights)
-    classes_weights_path = os.path.join(self.config['dataset']['base_path'], self.config['dataset']['dataset_name'] + '_classes_weights.npy')
-    np.save(classes_weights_path, ret) 
+
+    # Save weights
+    base_path = config.get('dataset', {}).get('base_path', '.')
+    dataset_name = config.get('dataset', {}).get('dataset_name', 'dataset')
+    classes_weights_path = os.path.join(base_path, dataset_name + '_classes_weights.npy')
+    np.save(classes_weights_path, ret)
 
     return ret
