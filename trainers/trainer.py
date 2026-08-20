@@ -1,6 +1,8 @@
 import argparse
 import os
 import numpy as np
+import torch
+import yaml
 from tqdm import tqdm
 
 from data_generators.data_generator import initialize_data_loader
@@ -12,8 +14,13 @@ from utils.lr_scheduler import LR_Scheduler
 from utils.saver import Saver
 from utils.summaries import TensorboardSummary
 from utils.metrics import Evaluator
-import torch
-import yaml
+
+
+def freeze_bn(m):
+    """Set BatchNorm layers to eval mode (freeze running stats)."""
+    import torch.nn as nn
+    if isinstance(m, nn.BatchNorm2d):
+        m.eval()
 
 
 class Trainer(object):
@@ -28,9 +35,9 @@ class Trainer(object):
         # Define Tensorboard Summary
         self.summary = TensorboardSummary(self.config['training']['tensorboard']['log_dir'])
         self.writer = self.summary.create_summary()
-        
+
         self.train_loader, self.val_loader, self.test_loader, self.nclass = initialize_data_loader(config)
-        
+
         # Define network
         model = DeepLab(num_classes=self.nclass,
                         backbone=self.config['network']['backbone'],
@@ -59,7 +66,7 @@ class Trainer(object):
 
         self.criterion = SegmentationLosses(weight=weight, cuda=self.config['network']['use_cuda']).build_loss(mode=self.config['training']['loss_type'])
         self.model, self.optimizer = model, optimizer
-        
+
         # Define Evaluator
         self.evaluator = Evaluator(self.nclass)
         # Define lr scheduler
@@ -91,7 +98,7 @@ class Trainer(object):
             else:
                 self.model.load_state_dict(checkpoint['state_dict'])
 
-#            if not self.config['ft']:
+            #            if not self.config['ft']:
             self.optimizer.load_state_dict(checkpoint['optimizer'])
             self.best_pred = checkpoint['best_pred']
             print("=> loaded checkpoint '{}' (epoch {})"
@@ -101,6 +108,9 @@ class Trainer(object):
     def training(self, epoch):
         train_loss = 0.0
         self.model.train()
+        # model.train() overrides freeze_bn; re-freeze if configured
+        if self.config['network'].get('freeze_bn', False):
+            self.model.apply(freeze_bn)
         tbar = tqdm(self.train_loader)
         num_img_tr = len(self.train_loader)
         for i, sample in enumerate(tbar):
@@ -120,7 +130,8 @@ class Trainer(object):
             # Show 10 * 3 inference results each epoch
             if i % (num_img_tr // 10) == 0:
                 global_step = i + num_img_tr * epoch
-                self.summary.visualize_image(self.writer, self.config['dataset']['dataset_name'], image, target, output, global_step)
+                dataset_key = 'plant_phenotyping_binary' if self.nclass == 2 else self.config['dataset']['dataset_name']
+                self.summary.visualize_image(self.writer, dataset_key, image, target, output, global_step)
 
         self.writer.add_scalar('train/total_loss_epoch', train_loss, epoch)
         print('[Epoch: %d, numImages: %5d]' % (epoch, i * self.config['training']['batch_size'] + image.data.shape[0]))
@@ -129,15 +140,14 @@ class Trainer(object):
         #save last checkpoint
         self.saver.save_checkpoint({
             'epoch': epoch + 1,
-#            'state_dict': self.model.module.state_dict(),
             'state_dict': self.model.state_dict(),
             'optimizer': self.optimizer.state_dict(),
             'best_pred': self.best_pred,
         }, is_best = False, filename='checkpoint_last.pth.tar')
 
-        #if training on a subset reshuffle the data 
+        #if training on a subset reshuffle the data
         if self.config['training']['train_on_subset']['enabled']:
-            self.train_loader.dataset.shuffle_dataset()    
+            self.train_loader.dataset.shuffle_dataset()
 
 
     def validation(self, epoch):
@@ -165,23 +175,38 @@ class Trainer(object):
         Acc_class = self.evaluator.Pixel_Accuracy_Class()
         mIoU = self.evaluator.Mean_Intersection_over_Union()
         FWIoU = self.evaluator.Frequency_Weighted_Intersection_over_Union()
+        # Foreground (leaf) metrics, index 1 in confusion matrix
+        cls_conf = self.evaluator.confusion_matrix
+        intra = np.diag(cls_conf)
+        row_sum = cls_conf.sum(axis=1)
+        col_sum = cls_conf.sum(axis=0)
+        iou_leaf = intra[1] / (row_sum[1] + col_sum[1] - intra[1]) if (row_sum[1] + col_sum[1] - intra[1]) > 0 else 0.0
+        dice_leaf = 2 * intra[1] / (row_sum[1] + col_sum[1]) if (row_sum[1] + col_sum[1]) > 0 else 0.0
         self.writer.add_scalar('val/total_loss_epoch', test_loss, epoch)
         self.writer.add_scalar('val/mIoU', mIoU, epoch)
+        self.writer.add_scalar('val/IoU_leaf', iou_leaf, epoch)
+        self.writer.add_scalar('val/Dice_leaf', dice_leaf, epoch)
         self.writer.add_scalar('val/Acc', Acc, epoch)
         self.writer.add_scalar('val/Acc_class', Acc_class, epoch)
         self.writer.add_scalar('val/fwIoU', FWIoU, epoch)
         print('Validation:')
         print('[Epoch: %d, numImages: %5d]' % (epoch, i * self.config['training']['batch_size'] + image.data.shape[0]))
-        print("Acc:{}, Acc_class:{}, mIoU:{}, fwIoU: {}".format(Acc, Acc_class, mIoU, FWIoU))
+        print("Acc:{}, Acc_class:{}, mIoU:{}, fwIoU:{}, IoU_leaf:{}, Dice_leaf:{}".format(Acc, Acc_class, mIoU, FWIoU, iou_leaf, dice_leaf))
         print('Loss: %.3f' % test_loss)
 
-        new_pred = mIoU
+        # Best checkpoint selected by foreground Dice (leaf), not test set
+        new_pred = dice_leaf
         if new_pred > self.best_pred:
             self.best_pred = new_pred
             self.saver.save_checkpoint({
                 'epoch': epoch + 1,
-#                'state_dict': self.model.module.state_dict(),
                 'state_dict': self.model.state_dict(),
                 'optimizer': self.optimizer.state_dict(),
                 'best_pred': self.best_pred,
-            },  is_best = True, filename='checkpoint_best.pth.tar')
+                'config': self.config,
+                'metrics': {
+                    'Acc': float(Acc), 'Acc_class': float(Acc_class),
+                    'mIoU': float(mIoU), 'fwIoU': float(FWIoU),
+                    'IoU_leaf': float(iou_leaf), 'Dice_leaf': float(dice_leaf),
+                },
+            }, is_best = True, filename='checkpoint_best.pth.tar')

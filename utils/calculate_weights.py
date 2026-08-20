@@ -23,7 +23,7 @@ def calculate_weigths_labels(config, dataset, dataloader, num_classes):
         class_weight = 1 / (np.log(1.02 + (frequency / total_frequency)))
         class_weights.append(class_weight)
     ret = np.array(class_weights)
-    classes_weights_path = os.path.join(self.config['dataset']['base_path'], self.config['dataset']['dataset_name'] + '_classes_weights.npy')
-    np.save(classes_weights_path, ret) 
+    classes_weights_path = os.path.join(config['dataset']['base_path'], dataset + '_classes_weights.npy')
+    np.save(classes_weights_path, ret)
 
     return ret

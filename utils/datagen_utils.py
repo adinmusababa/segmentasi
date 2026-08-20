@@ -1,4 +1,3 @@
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
@@ -39,6 +38,10 @@ def decode_segmap(label_mask, dataset, plot=False):
     elif dataset == 'plant_phenotyping':
         n_classes = 20
         label_colours = get_plant_phenotyping_labels()
+
+    elif dataset == 'plant_phenotyping_binary':
+        n_classes = 2
+        label_colours = get_plant_phenotyping_binary_labels()
 
     else:
         raise NotImplementedError
@@ -150,6 +153,11 @@ def get_plant_phenotyping_labels():
     colors = np.random.randint(0, 255, (20, 3), dtype=np.uint8)
     colors[0] = [0, 0, 0]  # background black
     return colors
+
+
+def get_plant_phenotyping_binary_labels():
+    """Return color map for 2 classes: 0=background(black), 1=leaf(green)"""
+    return np.array([[0, 0, 0], [0, 200, 0]])
 
 
 def denormalize_image(image):
