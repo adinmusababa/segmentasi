@@ -53,9 +53,9 @@ class Predictor():
 
 
         if self.config['network']['use_cuda']:
-            checkpoint = torch.load(self.checkpoint_path)
+            checkpoint = torch.load(self.checkpoint_path, weights_only=False)
         else:
-            checkpoint = torch.load(self.checkpoint_path, map_location={'cuda:0': 'cpu'})
+            checkpoint = torch.load(self.checkpoint_path, map_location={'cuda:0': 'cpu'}, weights_only=False)
 
 #        print(checkpoint)
         model = torch.nn.DataParallel(model)

@@ -80,9 +80,9 @@ class Trainer(object):
                 raise RuntimeError("=> no checkpoint found at '{}'" .format(self.config['training']['weights_initialization']['restore_from']))
 
             if self.config['network']['use_cuda']:
-                checkpoint = torch.load(self.config['training']['weights_initialization']['restore_from'])
+                checkpoint = torch.load(self.config['training']['weights_initialization']['restore_from'], weights_only=False)
             else:
-                checkpoint = torch.load(self.config['training']['weights_initialization']['restore_from'], map_location={'cuda:0': 'cpu'})
+                checkpoint = torch.load(self.config['training']['weights_initialization']['restore_from'], map_location={'cuda:0': 'cpu'}, weights_only=False)
 
             self.config['training']['start_epoch'] = checkpoint['epoch']
 
