@@ -12,3 +12,8 @@ experiments/*
 .ipynb_checkpoints
 */.ipynb_checkpoints/*
 run/*
+data/imgs/
+data/masks/
+data/masks_encoded/
+.claude/
+graphify-out/
