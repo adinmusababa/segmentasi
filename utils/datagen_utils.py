@@ -36,6 +36,9 @@ def decode_segmap(label_mask, dataset, plot=False):
         n_classes = 3
         label_colours = get_braintumor_labels()
 
+    elif dataset == 'plant_phenotyping':
+        n_classes = 20
+        label_colours = get_plant_phenotyping_labels()
 
     else:
         raise NotImplementedError
@@ -139,6 +142,14 @@ def get_braintumor_labels():
         [244, 35, 232],
         [70, 70, 70]])
 
+
+def get_plant_phenotyping_labels():
+    """Return color map for 20 classes (0=background + 19 plant organs)"""
+    # Use a consistent colormap - background black, then distinct colors
+    np.random.seed(42)
+    colors = np.random.randint(0, 255, (20, 3), dtype=np.uint8)
+    colors[0] = [0, 0, 0]  # background black
+    return colors
 
 
 def denormalize_image(image):

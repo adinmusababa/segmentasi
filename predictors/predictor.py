@@ -1,50 +1,38 @@
-import os
 import numpy as np
-#import cv2
-#from PIL import Image
-import random
-import datetime
-import io
-#from sklearn.model_selection import train_test_split
-from matplotlib import pyplot as plt
-import json
-import time
+from PIL import Image
 
-from models.deeplab import *
-from data_generators.deepfashion import DeepFashionSegmentation
-
-import argparse
-from utils.datagen_utils import denormalize_image
-#from deeplab_model.utils.plot_utils import centroid_histogram, mask_and_downsample, get_average_color, normalize_colors
+from models.deeplab import DeepLab
 from data_generators.data_generator import initialize_data_loader
 from utils.metrics import Evaluator
 from tqdm import tqdm
 from losses.loss import SegmentationLosses
-
-import yaml
-from PIL import Image
+import torch
+from preprocessing.custom_transforms import Normalize, ToTensor, FixedResize
 
 class Predictor():
-    def __init__(self, config,  checkpoint_path='./snapshots/checkpoint_best.pth.tar'):
+    def __init__(self, config, checkpoint_path='./experiments/checkpoint_best.pth.tar'):
         self.config = config
         self.checkpoint_path = checkpoint_path
 
-#        with open(self.config_file_path) as f:
-
-        self.categories_dict = {"background": 0, "short_sleeve_top": 1, "long_sleeve_top": 2, "short_sleeve_outwear": 3,
-                "long_sleeve_outwear": 4, "vest": 5, "sling": 6, "shorts": 7, "trousers": 8,
-                "skirt": 9,  "short_sleeve_dress": 10, "long_sleeve_dress": 11,
-                "vest_dress": 12, "sling_dress": 13}
-
-#        self.categories_dict = {"background": 0, "meningioma": 1, "glioma": 2, "pituitary": 3}
+        # Class names for plant dataset (20 classes: 0=background, 1-19=plant organs)
+        self.categories_dict = {i: f"class_{i}" for i in range(config['network']['num_classes'])}
+        self.categories_dict[0] = "background"
         self.categories_dict_rev = {v: k for k, v in self.categories_dict.items()}
-        
+
         self.model = self.load_model()
         self.train_loader, self.val_loader, self.test_loader, self.nclass = initialize_data_loader(config)
 
         self.num_classes = self.config['network']['num_classes']
         self.evaluator = Evaluator(self.num_classes)
         self.criterion = SegmentationLosses(weight=None, cuda=self.config['network']['use_cuda']).build_loss(mode=self.config['training']['loss_type'])
+
+        # Preprocessing transforms (same as validation)
+        self.crop_size = config['image']['crop_size']
+        self.means = (0.485, 0.456, 0.406)
+        self.stds = (0.229, 0.224, 0.225)
+        self.resize_transform = FixedResize(self.crop_size)
+        self.normalize_transform = Normalize(mean=self.means, std=self.stds)
+        self.to_tensor_transform = ToTensor()
 
 
     def load_model(self):
@@ -98,27 +86,40 @@ class Predictor():
 
 
     def segment_image(self, filename):
+        """Segment a single image without ground truth mask.
 
-#        file_path = os.path.join(dir_path, filename)
+        Args:
+            filename: Path to input image
+
+        Returns:
+            image: Original image as numpy array (H, W, 3), uint8
+            prediction: Predicted mask as numpy array (H, W), int64 (class indices)
+        """
         img = Image.open(filename).convert('RGB')
+        orig_w, orig_h = img.size
 
+        # Preprocess (same as validation: FixedResize -> Normalize -> ToTensor)
         sample = {'image': img, 'label': img}
+        sample = self.resize_transform(sample)
+        sample = self.normalize_transform(sample)
+        sample = self.to_tensor_transform(sample)
+        image = sample['image'].unsqueeze(0)  # (1, 3, H, W)
 
-        sample = DeepFashionSegmentation.preprocess(sample, crop_size=513)
-        image, _ = sample['image'], sample['label']
-        image = image.unsqueeze(0)
+        if self.config['network']['use_cuda']:
+            image = image.cuda()
 
         with torch.no_grad():
-            prediction = self.model(image)
+            prediction = self.model(image)  # (1, num_classes, H, W)
 
-        image = image.squeeze(0).numpy()
-        image = denormalize_image(np.transpose(image, (1, 2, 0)))
-        image *= 255.
+        # Get prediction mask
+        pred = prediction.squeeze(0).cpu().numpy()  # (num_classes, H, W)
+        pred_mask = np.argmax(pred, axis=0).astype(np.uint8)  # (H, W)
 
-        prediction = prediction.squeeze(0).cpu().numpy()
+        # Resize prediction back to original image size
+        pred_mask_pil = Image.fromarray(pred_mask).resize((orig_w, orig_h), Image.NEAREST)
+        pred_mask = np.array(pred_mask_pil)
 
-#        print(prediction[])
+        # Denormalize original image for visualization
+        orig_img = np.array(img).astype(np.uint8)
 
-        prediction = np.argmax(prediction, axis=0)
-
-        return image, prediction
+        return orig_img, pred_mask
