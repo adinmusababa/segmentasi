@@ -1,4 +1,3 @@
-import os
 import numpy as np
 import random
 import datetime
@@ -15,6 +14,8 @@ from data_generators.data_generator import initialize_data_loader
 from utils.metrics import Evaluator
 from tqdm import tqdm
 from losses.loss import SegmentationLosses
+import torch
+from preprocessing.custom_transforms import Normalize, ToTensor, FixedResize
 
 import yaml
 from PIL import Image
@@ -34,7 +35,6 @@ class Predictor():
         self.model = self.load_model()
         self.train_loader, self.val_loader, self.test_loader, self.nclass = initialize_data_loader(config)
 
-        self.num_classes = self.config['network']['num_classes']
         self.evaluator = Evaluator(self.num_classes)
         self.criterion = SegmentationLosses(weight=None, cuda=self.config['network']['use_cuda']).build_loss(mode=self.config['training']['loss_type'])
 
@@ -52,9 +52,9 @@ class Predictor():
                         output_stride=self.config['image']['out_stride'], sync_bn=False, freeze_bn=True)
 
         if self.config['network']['use_cuda']:
-            checkpoint = torch.load(self.checkpoint_path)
+            checkpoint = torch.load(self.checkpoint_path, weights_only=False)
         else:
-            checkpoint = torch.load(self.checkpoint_path, map_location={'cuda:0': 'cpu'})
+            checkpoint = torch.load(self.checkpoint_path, map_location={'cuda:0': 'cpu'}, weights_only=False)
 
         # Handle both DataParallel and non-DataParallel checkpoints
         state_dict = checkpoint['state_dict']
@@ -73,12 +73,18 @@ class Predictor():
 
         return model
 
+
     def inference_on_test_set(self):
+        """Evaluate on the actual test split (not val_loader).
+
+        Reports foreground (leaf) metrics: IoU, Dice, Precision, Recall,
+        plus pixel accuracy and confusion matrix.
+        """
         print("inference on test set")
 
         self.model.eval()
         self.evaluator.reset()
-        tbar = tqdm(self.val_loader, desc='\r')
+        tbar = tqdm(self.test_loader, desc='\r')
         test_loss = 0.0
         for i, sample in enumerate(tbar):
             image, target = sample['image'], sample['label']
@@ -95,16 +101,52 @@ class Predictor():
             # Add batch sample into evaluator
             self.evaluator.add_batch(target, pred)
 
-        # Fast test during the training
         Acc = self.evaluator.Pixel_Accuracy()
         Acc_class = self.evaluator.Pixel_Accuracy_Class()
         mIoU = self.evaluator.Mean_Intersection_over_Union()
         FWIoU = self.evaluator.Frequency_Weighted_Intersection_over_Union()
 
+        # Foreground (leaf) metrics from confusion matrix
+        cm = self.evaluator.confusion_matrix
+        tp, fp, fn = cm[1, 1], cm[0, 1], cm[1, 0]
+        prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        iou_leaf = tp / (tp + fp + fn) if (tp + fp + fn) > 0 else 0.0
+        dice_leaf = 2 * tp / (2 * tp + fp + fn) if (2 * tp + fp + fn) > 0 else 0.0
+
         print("Accuracy:{}, Accuracy per class:{}, mean IoU:{}, frequency weighted IoU: {}".format(Acc, Acc_class, mIoU, FWIoU))
         print('Loss: %.3f' % test_loss)
+        print('Foreground (leaf):')
+        print("  IoU: {:.4f}, Dice: {:.4f}, Precision: {:.4f}, Recall: {:.4f}".format(iou_leaf, dice_leaf, prec, rec))
+        print('Confusion matrix (rows=target, cols=pred):')
+        print(cm)
+
+        return {
+            'Acc': float(Acc), 'Acc_class': float(Acc_class),
+            'mIoU': float(mIoU), 'fwIoU': float(FWIoU),
+            'IoU_leaf': float(iou_leaf), 'Dice_leaf': float(dice_leaf),
+            'Precision': float(prec), 'Recall': float(rec),
+        }
 
 
+    def predict_probability(self, filename):
+        """Forward-probability of the foreground (leaf) class.
+
+        Applies the same preprocessing pipeline as training, returns the
+        foreground probability map at the original image spatial size.
+        This is the output used for ensemble with U-Net: softmax channel 1.
+        """
+        img = Image.open(filename).convert('RGB')
+        orig_w, orig_h = img.size
+
+        sample = {'image': img, 'label': img}
+        sample = self.resize_transform(sample)
+        sample = self.normalize_transform(sample)
+        sample = self.to_tensor_transform(sample)
+        image = sample['image'].unsqueeze(0)  # (1, 3, H, W)
+
+        if self.config['network']['use_cuda']:
+            image = image.cuda()
 
     def segment_image(self, filename):
         """Segment a single image without ground truth mask.

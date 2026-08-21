@@ -1,14 +1,37 @@
 import os
 import torch
 from torchvision.utils import make_grid
-from tensorboardX import SummaryWriter
 from utils.datagen_utils import decode_seg_map_sequence
+
+try:
+    from tensorboardX import SummaryWriter
+except ImportError:
+    SummaryWriter = None
+
+
+class _NullWriter(object):
+    """No-op writer used when tensorboardX is not installed."""
+    def add_scalar(self, *args, **kwargs):
+        pass
+
+    def add_image(self, *args, **kwargs):
+        pass
+
+    def add_histogram(self, *args, **kwargs):
+        pass
+
+    def close(self):
+        pass
+
 
 class TensorboardSummary(object):
     def __init__(self, directory):
         self.directory = directory
 
     def create_summary(self):
+        if SummaryWriter is None:
+            print('Warning: tensorboardX not installed, tensorboard logging disabled.')
+            return _NullWriter()
         writer = SummaryWriter(log_dir=os.path.join(self.directory))
         return writer
 

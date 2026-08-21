@@ -1,0 +1,10 @@
+project: deeplabv3
+kernel_slug: adinmusababa/deeplabv3
+code_file: notebooks\run_deeplabv3_experiment.ipynb
+accelerator: none
+internet: false
+privacy: private
+datasets: []
+competitions: []
+outputs:
+  download_to: .kaggle-outputs/
