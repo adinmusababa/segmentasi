@@ -37,14 +37,10 @@ def decode_segmap(label_mask, dataset, plot=False):
 
     elif dataset == 'plant_phenotyping':
         n_classes = 20
-        label_colours = get_plant_phenotyping_labels()
-
-    elif dataset == 'plant_phenotyping_binary':
-        n_classes = 2
-        label_colours = get_plant_phenotyping_binary_labels()
+        label_colours = get_plant_labels()
 
     else:
-        raise NotImplementedError
+        raise NotImplementedError(f"Dataset '{dataset}' not supported for visualization")
 
     r = label_mask.copy()
     g = label_mask.copy()
@@ -146,18 +142,14 @@ def get_braintumor_labels():
         [70, 70, 70]])
 
 
-def get_plant_phenotyping_labels():
-    """Return color map for 20 classes (0=background + 19 plant organs)"""
-    # Use a consistent colormap - background black, then distinct colors
-    np.random.seed(42)
-    colors = np.random.randint(0, 255, (20, 3), dtype=np.uint8)
-    colors[0] = [0, 0, 0]  # background black
-    return colors
+def get_plant_labels():
+    """Color map for Plant Phenotyping dataset (20 classes: 0=background, 1-19=organs).
+    Uses deterministic pseudo-random colors for reproducibility."""
+    rng = np.random.RandomState(42)
+    colors = rng.randint(0, 255, (20, 3))
+    colors[0] = [0, 0, 0]  # background = black
+    return colors.astype(np.uint8)
 
-
-def get_plant_phenotyping_binary_labels():
-    """Return color map for 2 classes: 0=background(black), 1=leaf(green)"""
-    return np.array([[0, 0, 0], [0, 200, 0]])
 
 
 def denormalize_image(image):

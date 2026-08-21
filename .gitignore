@@ -15,5 +15,8 @@ run/*
 data/imgs/
 data/masks/
 data/masks_encoded/
-.claude/
+
+
+.claude
+
 graphify-out/

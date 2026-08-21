@@ -1,7 +1,15 @@
 import numpy as np
-from PIL import Image
+import random
+import datetime
+import io
+from matplotlib import pyplot as plt
+import json
+import time
 
 from models.deeplab import DeepLab
+
+import argparse
+#from utils.datagen_utils import denormalize_image
 from data_generators.data_generator import initialize_data_loader
 from utils.metrics import Evaluator
 from tqdm import tqdm
@@ -9,17 +17,19 @@ from losses.loss import SegmentationLosses
 import torch
 from preprocessing.custom_transforms import Normalize, ToTensor, FixedResize
 
+import yaml
+from PIL import Image
+import torch
+from preprocessing.custom_transforms import Normalize, ToTensor, FixedResize
 
 class Predictor():
     def __init__(self, config, checkpoint_path='./experiments/checkpoint_best.pth.tar'):
         self.config = config
         self.checkpoint_path = checkpoint_path
 
-        self.num_classes = config['network']['num_classes']
-        self.categories_dict = {i: f"class_{i}" for i in range(self.num_classes)}
+        # Class names for plant dataset (20 classes: 0=background, 1-19=plant organs)
+        self.categories_dict = {i: f"class_{i}" for i in range(config['network']['num_classes'])}
         self.categories_dict[0] = "background"
-        if self.num_classes == 2:
-            self.categories_dict[1] = "leaf"
         self.categories_dict_rev = {v: k for k, v in self.categories_dict.items()}
 
         self.model = self.load_model()
@@ -41,22 +51,25 @@ class Predictor():
         model = DeepLab(num_classes=self.config['network']['num_classes'], backbone=self.config['network']['backbone'],
                         output_stride=self.config['image']['out_stride'], sync_bn=False, freeze_bn=True)
 
-
         if self.config['network']['use_cuda']:
             checkpoint = torch.load(self.checkpoint_path, weights_only=False)
         else:
             checkpoint = torch.load(self.checkpoint_path, map_location={'cuda:0': 'cpu'}, weights_only=False)
 
+        # Handle both DataParallel and non-DataParallel checkpoints
         state_dict = checkpoint['state_dict']
-        # Handle both DataParallel ('module.') and plain model checkpoints
-        keys = list(state_dict.keys())
-        wrapped = keys[0].startswith('module.')
-        requires_prefix = not wrapped
-        if requires_prefix:
-            state_dict = {'module.' + k: v for k, v in state_dict.items()}
+        # Remove 'module.' prefix if present (from DataParallel)
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            name = k[7:] if k.startswith('module.') else k
+            new_state_dict[name] = v
 
-        model = torch.nn.DataParallel(model)
-        model.load_state_dict(state_dict)
+        if self.config['network']['use_cuda']:
+            model = torch.nn.DataParallel(model)
+            model.load_state_dict(new_state_dict)
+            model = model.cuda()
+        else:
+            model.load_state_dict(new_state_dict)
 
         return model
 
@@ -135,26 +148,6 @@ class Predictor():
         if self.config['network']['use_cuda']:
             image = image.cuda()
 
-        with torch.no_grad():
-            logits = self.model(image)  # (1, num_classes, H, W)
-
-        prob = torch.softmax(logits, dim=1)[:, 1]  # foreground channel
-        prob = prob.squeeze(0).cpu().numpy()  # (H, W)
-
-        # resize probability back to original image size
-        prob_pil = Image.fromarray(prob.astype(np.float32)).resize((orig_w, orig_h), Image.BILINEAR)
-        prob = np.array(prob_pil, dtype=np.float32)
-
-        return prob
-
-
-    def predict_mask(self, filename, threshold=0.5):
-        """Binary mask from foreground probability (0/1)."""
-        prob = self.predict_probability(filename)
-        mask = (prob >= threshold).astype(np.uint8)
-        return mask
-
-
     def segment_image(self, filename):
         """Segment a single image without ground truth mask.
 
@@ -163,14 +156,33 @@ class Predictor():
 
         Returns:
             image: Original image as numpy array (H, W, 3), uint8
-            prediction: Predicted mask as numpy array (H, W), uint8 (0/1)
+            prediction: Predicted mask as numpy array (H, W), int64 (class indices)
         """
         img = Image.open(filename).convert('RGB')
         orig_w, orig_h = img.size
 
-        pred_mask = self.predict_mask(filename)
+        # Preprocess (same as validation: FixedResize -> Normalize -> ToTensor)
+        sample = {'image': img, 'label': img}
+        sample = self.resize_transform(sample)
+        sample = self.normalize_transform(sample)
+        sample = self.to_tensor_transform(sample)
+        image = sample['image'].unsqueeze(0)  # (1, 3, H, W)
 
-        # Original image for visualization
+        if self.config['network']['use_cuda']:
+            image = image.cuda()
+
+        with torch.no_grad():
+            prediction = self.model(image)  # (1, num_classes, H, W)
+
+        # Get prediction mask
+        pred = prediction.squeeze(0).cpu().numpy()  # (num_classes, H, W)
+        pred_mask = np.argmax(pred, axis=0).astype(np.uint8)  # (H, W)
+
+        # Resize prediction back to original image size
+        pred_mask_pil = Image.fromarray(pred_mask).resize((orig_w, orig_h), Image.NEAREST)
+        pred_mask = np.array(pred_mask_pil)
+
+        # Denormalize original image for visualization
         orig_img = np.array(img).astype(np.uint8)
 
         return orig_img, pred_mask
